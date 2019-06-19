@@ -5,7 +5,6 @@
  * @author YangHui<yanghui@y-sir.com>
  * @version 0.1
  * @createTime 2019/6/18 6:34 PM
- * @copyright Copyright (c) 云尚星. (http://www.yosar.com)
  */
 
 namespace think\log\driver;
