@@ -1,2 +1,6 @@
 /cache/
 /config/development/
+.idea/*
+*.log
+vendor/*
+composer.lock

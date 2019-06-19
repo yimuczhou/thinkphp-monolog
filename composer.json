@@ -1,0 +1,24 @@
+{
+  "name": "functions/think-monolog",
+  "description": "thinkphp框架日志扩展monolog",
+  "minimum-stability": "stable",
+  "license": "proprietary",
+  "type": "library",
+  "authors": [
+    {
+      "name": "functions",
+      "email": "yanghui@y-sir.com"
+    }
+  ],
+  "require": {
+    "php": ">=7.0.0",
+    "ext-json": "*",
+    "topthink/framework": "5.1.*",
+    "monolog/monolog":"1.24.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "think\\": "src/"
+    }
+  }
+}
