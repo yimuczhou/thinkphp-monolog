@@ -1,6 +1,6 @@
 {
   "name": "functions/think-monolog",
-  "description": "thinkphp框架日志扩展monolog",
+  "description": "ThinkPHP5.1框架日志扩展monolog",
   "minimum-stability": "stable",
   "license": "proprietary",
   "type": "library",
