@@ -32,7 +32,9 @@ class Monolog
         'log_name' => 'App',
         'file_name' => 'app.log',
         'sql_file_name' => 'sql.log',
-        'log_format' => "[%datetime%] #reqId# %level_name% %message%\n"
+        'log_format' => "[%datetime%] [#reqId#] [%level_name%] %message%\n",
+        'ignore_tp_log' => true, //忽略tp框架日志
+        'apart_sql' => true, //分开sql日志
     ];
 
     /**
@@ -56,6 +58,8 @@ class Monolog
     protected $sqlLogger;
 
     const LOG_SQL = 'SQL';
+    const LOG_INFO = 'INFO';
+    const LOG_REQUEST_ID = 'HTTP_REQUEST_ID';
 
     // 实例化并传入参数
     public function __construct(App $app, array $config = [])
@@ -74,6 +78,7 @@ class Monolog
         $this->init();
     }
 
+
     /**
      * @return Monolog
      */
@@ -82,8 +87,12 @@ class Monolog
         $fileName = $this->config['path'] . $this->config['file_name'];
         $this->logger = $this->initLogger($fileName);
 
-        $sqlFileName = $this->config['path'] . $this->config['sql_file_name'];
-        $this->sqlLogger = $this->initLogger($sqlFileName);
+        if ($this->isApartSqlLog()) {
+            $sqlFileName = $this->config['path'] . $this->config['sql_file_name'];
+            $this->sqlLogger = $this->initLogger($sqlFileName);
+        } else {
+            $this->sqlLogger = $this->logger;
+        }
 
         $this->getLoggerLevelMap();
 
@@ -98,13 +107,22 @@ class Monolog
      */
     public function initLogger(string $fileName): \Monolog\Logger
     {
-        $logger = new Logger($this->config['log_name']);
+        $handler = new Logger($this->config['log_name']);
         $streamHandler = new RotatingFileHandler($fileName, 30, Logger::DEBUG, true, 0664);
         $formatter = new LineFormatter(str_replace("#reqId#", $this->getRequestId(), $this->config['log_format']),
             $this->config['time_format']);
         $streamHandler->setFormatter($formatter);
-        $logger->pushHandler($streamHandler);
-        return $logger;
+        $handler->pushHandler($streamHandler);
+        return $handler;
+    }
+
+    /**
+     * 是分开sql日志
+     * @return bool
+     */
+    protected function isApartSqlLog(): bool
+    {
+        return $this->config['apart_sql'];
     }
 
     /**
@@ -125,25 +143,72 @@ class Monolog
      */
     public function save(array $log = [], $append = false)
     {
-
         $this->rotating();
+
+        if ('cli' != PHP_SAPI) {
+            $this->appendExtraInfo($log);
+        }
+
         foreach ($log as $type => $val) {
             foreach ($val as $msg) {
+
                 if (!is_string($msg)) {
                     $msg = var_export($msg, true);
                 }
-                $type = strtoupper($type);
-                if ($type == self::LOG_SQL) {
-                    $this->sqlLogger->info($msg);
-                } else {
-                    if (isset(self::$loggerLevelMap[$type])) {
-                        $this->logger->addRecord(self::$loggerLevelMap[$type], $msg);
-                    } else {
-                        $this->logger->debug($msg);
-                    }
+
+                //忽略不需要记录的内容
+                if ($this->ignoreTPLogContent($msg)) {
+                    continue;
                 }
+
+                $msg = PHP_SAPI == 'cli' ? '[CLI] ' . $msg : $msg;
+                $type = strtoupper($type);
+                $this->write($msg, $type);
             }
         }
+    }
+
+    /**
+     * 写入
+     *
+     * @param string $msg
+     * @param string $type
+     */
+    protected function write(string $msg, string $type)
+    {
+        if (isset(self::$loggerLevelMap[$type])) {
+            $this->logger->addRecord(self::$loggerLevelMap[$type], $msg);
+        } else {
+            $type == self::LOG_SQL ? $this->sqlLogger->info($msg) : $this->logger->debug($msg);
+        }
+    }
+
+
+    /**
+     *忽略tp框架一些日志
+     * @param string $content
+     * @return bool
+     */
+    protected function ignoreTPLogContent(string $content): bool
+    {
+        if (!$this->config['ignore_tp_log']) {
+            return false;
+        }
+
+        $arr = [
+            '[ LANG ]',
+            '[ ROUTE ]',
+            '[ PARAM ]',
+            '[ DB ]'
+        ];
+        $ignore = false;
+        foreach ($arr as $val) {
+            if (strpos($content, $val) !== false) {
+                $ignore = true;
+                break;
+            }
+        }
+        return $ignore;
     }
 
     /**
@@ -173,6 +238,7 @@ class Monolog
             try {
                 rename($destination, $this->getCurrDateLogNewFileName($destination));
             } catch (\Exception $e) {
+                error_log("日志重命名失败");
             }
         }
     }
@@ -209,9 +275,61 @@ class Monolog
     {
         static $requestId;
         if (empty($requestId)) {
-            //todo 后续扩展从$_SERVER读取上游调用服务
-            $requestId = md5(time() . rand(1, 1000));
+            $requestId = isset($_SERVER[self::LOG_REQUEST_ID]) && !empty($_SERVER[self::LOG_REQUEST_ID]) ? $_SERVER[self::LOG_REQUEST_ID] : md5(time() . rand(1,
+                    1000));
         }
         return $requestId;
+    }
+
+    /**
+     * 追加额外的信息
+     *
+     * @param $info
+     * @return Monolog
+     */
+    protected function appendExtraInfo(&$info): Monolog
+    {
+        $this->appendDebugInfo($info)->appendHostInfo($info);
+        return $this;
+    }
+
+    /**
+     * 追加debug信息
+     *
+     * @param $info
+     * @return $this
+     */
+    protected function appendDebugInfo(&$info): Monolog
+    {
+        if ($this->app->isDebug()) {
+
+            $runtime = round(microtime(true) - $this->app->getBeginTime(), 10);
+            $reqs = $runtime > 0 ? number_format(1 / $runtime, 2) : '∞';
+
+            $memory_use = number_format((memory_get_usage() - $this->app->getBeginMem()) / 1024, 2);
+
+            $time_str = '[运行时间：' . number_format($runtime, 6) . 's 吞吐率：' . $reqs . 'req/s';
+            $memory_str = ' 内存消耗：' . $memory_use . 'kb';
+            $file_load = ' 文件加载：' . count(get_included_files()) . ']';
+
+            $data[self::LOG_INFO] = $time_str . $memory_str . $file_load;
+            array_unshift($info, $data);
+        }
+        return $this;
+    }
+
+    /***
+     * 添加请求日志信息
+     *
+     * @param $info
+     * @return Monolog
+     */
+    protected function appendHostInfo(&$info): Monolog
+    {
+        $request = $this->app['request'];
+        $data['info'] = sprintf("[IP:%s Host:%s Url:%s, Method:%s]", $request->ip(), $request->host(),
+            $request->url(), $request->method());
+        array_unshift($info, $data);
+        return $this;
     }
 }
